@@ -1,277 +1,175 @@
 <?php
-// =================================================================
-// 1. INISIALISASI & KEAMANAN
-// =================================================================
+session_start();
+require '../config/db.php';
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../includes/auth.php';
-
-// Cek keamanan
-$currentRole = $_SESSION['role'] ?? '';
-if (!isset($_SESSION['user_id']) || !in_array($currentRole, ['super_admin', 'admin'])) {
-    header('Location: ../user/login.php');
+// Keamanan: Hanya user yang login & berstatus 'user'
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'user') {
+    header('Location: login.php');
     exit;
 }
 
-// =================================================================
-// 2. PROSES VERIFY TRANSACTION (Hanya Super Admin)
-// =================================================================
+$userId = $_SESSION['user_id'];
 
-$success = '';
-$errors = [];
+// Ambil data transaksi user
+$stmt = $pdo->prepare("SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC");
+$stmt->execute([$userId]);
+$transactions = $stmt->fetchAll();
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $currentRole === 'super_admin') {
-    $csrf = $_POST['csrf'] ?? '';
-    
-    if (!verifyCsrf($csrf)) {
-        $errors[] = '⚠️ Token keamanan tidak valid';
-    } else {
-        $action = $_POST['action'] ?? '';
-        $txId = (int)($_POST['tx_id'] ?? 0);
-        
-        if ($txId > 0) {
-            try {
-                if ($action === 'verify') {
-                    $stmt = $pdo->prepare("UPDATE transactions SET status = 'verified', verified_at = NOW() WHERE id = ?");
-                    $stmt->execute([$txId]);
-                    $success = '✅ Transaksi berhasil diverifikasi!';
-                } elseif ($action === 'reject') {
-                    $stmt = $pdo->prepare("UPDATE transactions SET status = 'failed' WHERE id = ?");
-                    $stmt->execute([$txId]);
-                    $success = '❌ Transaksi ditolak.';
-                }
-            } catch (PDOException $e) {
-                // Jika tabel belum ada
-                $errors[] = '⚠️ Tabel transaksi belum ada';
-            }
+// Hitung ringkasan (hanya transaksi sukses)
+$totalTopup = 0;
+$totalDonasi = 0;
+foreach ($transactions as $tx) {
+    if ($tx['status'] === 'success') {
+        if ($tx['type'] === 'topup') {
+            $totalTopup += $tx['amount'];
+        } else {
+            $totalDonasi += $tx['amount'];
         }
     }
 }
 
-// =================================================================
-// 3. AMBIL DATA TRANSAKSI
-// =================================================================
-
-// Filter
-$filterStatus = $_GET['status'] ?? 'all';
-$filterType = $_GET['type'] ?? 'all';
-
+// Ambil saldo aktif (fallback 0 jika tabel belum diinisialisasi)
 try {
-    $sql = "SELECT t.*, u.username 
-            FROM transactions t 
-            JOIN users u ON t.user_id = u.id 
-            WHERE 1=1";
-    
-    $params = [];
-    
-    if ($filterStatus !== 'all') {
-        $sql .= " AND t.status = ?";
-        $params[] = $filterStatus;
-    }
-    
-    if ($filterType !== 'all') {
-        $sql .= " AND t.type = ?";
-        $params[] = $filterType;
-    }
-    
-    $sql .= " ORDER BY t.created_at DESC";
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $transactions = $stmt->fetchAll();
+    $stmtBal = $pdo->prepare("SELECT balance FROM user_balances WHERE user_id = ?");
+    $stmtBal->execute([$userId]);
+    $saldo = $stmtBal->fetchColumn() ?: 0;
 } catch (PDOException $e) {
-    $transactions = [];
+    $saldo = 0;
 }
-
-// Generate CSRF token
-if (empty($_SESSION['csrf'])) {
-    $_SESSION['csrf'] = bin2hex(random_bytes(32));
-}
-
-// Judul halaman
-$judul = 'Cek Transaksi - Admin';
-
-// Load header
-require_once __DIR__ . '/../includes/header.php';
 ?>
-
-<!-- =================================================================
-     4. TAMPILAN HTML
-     ================================================================= -->
-
-<div class="container" style="max-width: 1200px; margin: 2rem auto; padding: 0 1rem;">
-    
-    <!-- Header -->
-    <div>
-        <a href="dashboard.php" style="color: #0b5345; text-decoration: none; display: inline-flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
-            ← Kembali ke Dashboard
-        </a>
-        <h1 style="margin: 0;">💰 Daftar Transaksi</h1>
-        <p style="color: #666; margin: 0.5rem 0 0 0;">Monitoring semua transaksi zakat & shadaqah</p>
-    </div>
-
-    <!-- Pesan -->
-    <?php if ($success): ?>
-        <div style="background: #d4edda; color: #155724; border: 1px solid #c3e6cb; padding: 1rem; border-radius: 5px; margin: 1rem 0;">
-            <?= $success ?>
-        </div>
-    <?php endif; ?>
-    
-    <?php if (!empty($errors)): ?>
-        <div style="background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; padding: 1rem; border-radius: 5px; margin: 1rem 0;">
-            <?php foreach ($errors as $error): ?>
-                <div><?= htmlspecialchars($error) ?></div>
-            <?php endforeach; ?>
-        </div>
-    <?php endif; ?>
-
-    <!-- Filter -->
-    <form method="GET" style="background: #fff; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin: 1.5rem 0; display: flex; gap: 1rem; flex-wrap: wrap; align-items: end;">
-        <div>
-            <label style="display: block; font-weight: 600; margin-bottom: 0.5rem; font-size: 0.9rem;">Status</label>
-            <select name="status" style="padding: 0.6rem; border: 1px solid #ced4da; border-radius: 4px; min-width: 150px;">
-                <option value="all" <?= $filterStatus === 'all' ? 'selected' : '' ?>>Semua Status</option>
-                <option value="pending" <?= $filterStatus === 'pending' ? 'selected' : '' ?>>⏳ Pending</option>
-                <option value="verified" <?= $filterStatus === 'verified' ? 'selected' : '' ?>>✅ Verified</option>
-                <option value="failed" <?= $filterStatus === 'failed' ? 'selected' : '' ?>>❌ Failed</option>
-            </select>
-        </div>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Riwayat Transaksi - Lazpersis Rajapolah</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+        body { background: #f8f9fa; color: #333; }
         
-        <div>
-            <label style="display: block; font-weight: 600; margin-bottom: 0.5rem; font-size: 0.9rem;">Jenis</label>
-            <select name="type" style="padding: 0.6rem; border: 1px solid #ced4da; border-radius: 4px; min-width: 150px;">
-                <option value="all" <?= $filterType === 'all' ? 'selected' : '' ?>>Semua Jenis</option>
-                <option value="zakat" <?= $filterType === 'zakat' ? 'selected' : '' ?>>Zakat</option>
-                <option value="shadaqah" <?= $filterType === 'shadaqah' ? 'selected' : '' ?>>Shadaqah</option>
-            </select>
-        </div>
+        /* Header */
+        .header { 
+            background: #0b5345; color: #fff; padding: 1rem 2rem; 
+            display: flex; justify-content: space-between; align-items: center; 
+        }
+        .header h1 { font-size: 1.2rem; }
+        .back-btn { 
+            color: #fff; text-decoration: none; padding: 0.5rem 1rem; 
+            border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 0.9rem; 
+        }
         
-        <button type="submit" style="background: #0b5345; color: white; border: none; padding: 0.6rem 1.5rem; border-radius: 4px; cursor: pointer; font-weight: 600;">
-            🔍 Filter
-        </button>
+        /* Container & Cards */
+        .container { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+        .card { 
+            background: #fff; padding: 1.5rem; border-radius: 12px; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.06); margin-bottom: 1.5rem; 
+        }
+        .card h2 { color: #0b5345; margin-bottom: 1rem; font-size: 1.3rem; }
         
-        <a href="transactions.php" style="background: #6c757d; color: white; text-decoration: none; padding: 0.6rem 1.5rem; border-radius: 4px; font-weight: 600;">
-            Reset
-        </a>
-    </form>
+        /* Summary Grid */
+        .summary-grid { 
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); 
+            gap: 1rem; margin-bottom: 1.5rem; 
+        }
+        .summary-item { 
+            background: #e8f5e9; padding: 1rem; border-radius: 10px; text-align: center; 
+        }
+        .summary-item h3 { font-size: 1.4rem; color: #0b5345; margin-bottom: 0.3rem; }
+        .summary-item p { font-size: 0.85rem; color: #555; }
+        
+        /* Transaction List */
+        .tx-list { list-style: none; }
+        .tx-item { 
+            display: flex; justify-content: space-between; align-items: center; 
+            padding: 1rem 0; border-bottom: 1px solid #eee; flex-wrap: wrap; gap: 0.5rem; 
+        }
+        .tx-item:last-child { border-bottom: none; }
+        .tx-info h4 { color: #222; font-size: 1rem; margin-bottom: 0.2rem; }
+        .tx-info p { font-size: 0.85rem; color: #666; }
+        .tx-amount { font-weight: 700; color: #0b5345; font-size: 1.05rem; }
+        
+        /* Status Badges */
+        .badge { 
+            padding: 0.3rem 0.7rem; border-radius: 20px; font-size: 0.75rem; font-weight: 600; 
+            display: inline-block; margin-top: 0.3rem; 
+        }
+        .badge-success { background: #d1e7dd; color: #0f5132; }
+        .badge-pending { background: #fff3cd; color: #856404; }
+        .badge-failed  { background: #f8d7da; color: #842029; }
+        
+        /* Empty State */
+        .empty-state { text-align: center; padding: 2rem 1rem; color: #777; }
+        .empty-state .icon { font-size: 3rem; margin-bottom: 0.8rem; display: block; }
+        .empty-state p { font-size: 0.95rem; }
+        
+        /* Responsive */
+        @media (max-width: 600px) {
+            .tx-item { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+            .tx-amount { align-self: flex-end; }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1> Riwayat Transaksi</h1>
+        <a href="dashboard.php" class="back-btn">← Kembali</a>
+    </header>
 
-    <!-- Statistik -->
-    <?php if (!empty($transactions)): 
-        $totalPending = count(array_filter($transactions, fn($t) => $t['status'] === 'pending'));
-        $totalVerified = count(array_filter($transactions, fn($t) => $t['status'] === 'verified'));
-        $totalAmount = array_sum(array_map(fn($t) => $t['status'] === 'verified' ? $t['amount'] : 0, $transactions));
-    ?>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1.5rem 0;">
-            <div style="background: #fff3cd; padding: 1rem; border-radius: 8px; text-align: center;">
-                <div style="font-size: 2rem; font-weight: bold; color: #856404;"><?= $totalPending ?></div>
-                <div style="color: #856404; font-size: 0.9rem;">Pending</div>
+    <div class="container">
+        <!-- Ringkasan Keuangan -->
+        <div class="summary-grid">
+            <div class="summary-item">
+                <h3>Rp <?= number_format($saldo, 0, ',', '.') ?></h3>
+                <p>Saldo Aktif</p>
             </div>
-            <div style="background: #d4edda; padding: 1rem; border-radius: 8px; text-align: center;">
-                <div style="font-size: 2rem; font-weight: bold; color: #155724;"><?= $totalVerified ?></div>
-                <div style="color: #155724; font-size: 0.9rem;">Verified</div>
+            <div class="summary-item">
+                <h3>Rp <?= number_format($totalTopup, 0, ',', '.') ?></h3>
+                <p>Total Top Up</p>
             </div>
-            <div style="background: #d1ecf1; padding: 1rem; border-radius: 8px; text-align: center;">
-                <div style="font-size: 2rem; font-weight: bold; color: #0c5460;">Rp <?= number_format($totalAmount, 0, ',', '.') ?></div>
-                <div style="color: #0c5460; font-size: 0.9rem;">Total Terverifikasi</div>
+            <div class="summary-item">
+                <h3>Rp <?= number_format($totalDonasi, 0, ',', '.') ?></h3>
+                <p>Total Donasi</p>
             </div>
         </div>
-    <?php endif; ?>
 
-    <!-- Tabel Transaksi -->
-    <?php if (empty($transactions)): ?>
-        <div style="background: #f8f9fa; padding: 3rem; text-align: center; border-radius: 8px;">
-            <p style="color: #666; font-size: 1.1rem; margin: 0;">📭 Belum ada transaksi</p>
-        </div>
-    <?php else: ?>
-        <div style="background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); overflow-x: auto;">
-            <table style="width: 100%; border-collapse: collapse;">
-                <thead style="background: #0b5345; color: white;">
-                    <tr>
-                        <th style="padding: 1rem; text-align: left;">Kode</th>
-                        <th style="padding: 1rem; text-align: left;">User</th>
-                        <th style="padding: 1rem; text-align: left;">Jenis</th>
-                        <th style="padding: 1rem; text-align: right;">Nominal</th>
-                        <th style="padding: 1rem; text-align: left;">Status</th>
-                        <th style="padding: 1rem; text-align: left;">Tanggal</th>
-                        <?php if ($currentRole === 'super_admin'): ?>
-                            <th style="padding: 1rem; text-align: center;">Aksi</th>
-                        <?php endif; ?>
-                    </tr>
-                </thead>
-                <tbody>
+        <!-- Daftar Transaksi -->
+        <div class="card">
+            <h2>Detail Transaksi</h2>
+            
+            <?php if (empty($transactions)): ?>
+                <div class="empty-state">
+                    <span class="icon"></span>
+                    <p>Belum ada transaksi. Mulai berdonasi atau top up saldo sekarang!</p>
+                </div>
+            <?php else: ?>
+                <ul class="tx-list">
                     <?php foreach ($transactions as $tx): 
-                        $statusColors = [
-                            'pending' => '#ffc107',
-                            'verified' => '#28a745',
-                            'failed' => '#dc3545'
-                        ];
-                        $statusLabels = [
-                            'pending' => '⏳ Pending',
-                            'verified' => '✅ Verified',
-                            'failed' => '❌ Failed'
-                        ];
+                        // Mapping status ke class badge
+                        $statusClass = match($tx['status']) {
+                            'success' => 'badge-success',
+                            'pending' => 'badge-pending',
+                            default   => 'badge-failed'
+                        };
+                        $typeLabel = strtoupper($tx['type']);
+                        $catLabel = $tx['category'] ? ' - ' . ucfirst($tx['category']) : '';
                     ?>
-                        <tr style="border-bottom: 1px solid #dee2e6;">
-                            <td style="padding: 1rem; font-family: monospace; font-size: 0.9rem;">
-                                <?= htmlspecialchars($tx['reference_code'] ?? 'N/A') ?>
-                            </td>
-                            <td style="padding: 1rem;">
-                                <?= htmlspecialchars($tx['username']) ?>
-                            </td>
-                            <td style="padding: 1rem;">
-                                <strong><?= ucfirst($tx['type']) ?></strong>
-                                <?php if ($tx['zakat_type']): ?>
-                                    <br><small style="color: #666;">(<?= ucfirst($tx['zakat_type']) ?>)</small>
-                                <?php endif; ?>
-                            </td>
-                            <td style="padding: 1rem; text-align: right; font-weight: 600;">
-                                Rp <?= number_format($tx['amount'], 0, ',', '.') ?>
-                            </td>
-                            <td style="padding: 1rem;">
-                                <span style="display: inline-block; padding: 0.3rem 0.7rem; background: <?= $statusColors[$tx['status']] ?>; color: white; border-radius: 20px; font-size: 0.85rem; font-weight: 600;">
-                                    <?= $statusLabels[$tx['status']] ?>
-                                </span>
-                            </td>
-                            <td style="padding: 1rem; font-size: 0.9rem; color: #666;">
-                                <?= date('d/m/Y H:i', strtotime($tx['created_at'])) ?>
-                            </td>
-                            <?php if ($currentRole === 'super_admin'): ?>
-                                <td style="padding: 1rem; text-align: center;">
-                                    <?php if ($tx['status'] === 'pending'): ?>
-                                        <form method="POST" style="display: inline;">
-                                            <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf']) ?>">
-                                            <input type="hidden" name="action" value="verify">
-                                            <input type="hidden" name="tx_id" value="<?= $tx['id'] ?>">
-                                            <button type="submit" style="background: #28a745; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem;" onclick="return confirm('Verifikasi transaksi ini?')">
-                                                ✓ Verifikasi
-                                            </button>
-                                        </form>
-                                        <form method="POST" style="display: inline; margin-top: 0.3rem;">
-                                            <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['csrf']) ?>">
-                                            <input type="hidden" name="action" value="reject">
-                                            <input type="hidden" name="tx_id" value="<?= $tx['id'] ?>">
-                                            <button type="submit" style="background: #dc3545; color: white; border: none; padding: 0.4rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem;" onclick="return confirm('Tolak transaksi ini?')">
-                                                ✗ Tolak
-                                            </button>
-                                        </form>
-                                    <?php else: ?>
-                                        <span style="color: #adb5bd; font-size: 0.85rem;">-</span>
-                                    <?php endif; ?>
-                                </td>
-                            <?php endif; ?>
-                        </tr>
+                    <li class="tx-item">
+                        <div class="tx-info">
+                            <h4><?= $typeLabel . htmlspecialchars($catLabel) ?></h4>
+                            <p>
+                                <?= date('d M Y, H:i', strtotime($tx['created_at'])) ?> • 
+                                Ref: <span style="font-family:monospace;"><?= htmlspecialchars($tx['qris_ref']) ?></span>
+                            </p>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="tx-amount">Rp <?= number_format($tx['amount'], 0, ',', '.') ?></div>
+                            <span class="badge <?= $statusClass ?>"><?= ucfirst($tx['status']) ?></span>
+                        </div>
+                    </li>
                     <?php endforeach; ?>
-                </tbody>
-            </table>
+                </ul>
+            <?php endif; ?>
         </div>
-    <?php endif; ?>
-
-</div>
-
-<?php 
-require_once __DIR__ . '/../includes/footer.php'; 
-?>
+    </div>
+</body>
+</html>
