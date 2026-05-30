@@ -1,4 +1,4 @@
     </main>
-    <footer>&copy; <?= date('Y') ?> Lazpersis Cabang Rajapolah, Tasikmalaya.</footer>
+    <footer>&copy; <?= date('Y') ?> Lazpersis Kabupaten Tasikmalaya.</footer>
 </body>
 </html>

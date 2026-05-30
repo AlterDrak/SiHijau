@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Masuk - Lazpersis Rajapolah</title>
+    <title>Masuk - Lazpersis Kabupaten Tasikmalaya</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
         body { background: #f4f7f6; color: #333; line-height: 1.6; }
@@ -28,7 +28,7 @@
 <body>
     <div class="auth-wrapper">
         <div class="auth-box">
-            <h2>🔐 Masuk ke Akun</h2>
+            <h2>Masuk ke Akun</h2>
             
             <?php if (isset($_GET['error'])): ?>
                 <?php if ($_GET['error'] == 'nonaktif'): ?>
